@@ -1,0 +1,46 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Go
+gateway/gateway
+gateway/gateway.exe
+
+# Data (large files, generated)
+data/raw/
+data/db/
+data/chromadb/
+!data/.gitkeep
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yaml
+
+# Evaluation results (generated)
+evaluation/results/*.json
+evaluation/results/*.csv
+
+# Logs
+*.log
