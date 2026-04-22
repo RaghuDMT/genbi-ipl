@@ -11,8 +11,11 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./intelligence/app:/app/app
+      - ./etl:/app/etl
+      - ./scripts:/app/scripts
       - ./config:/app/config:ro
-      - ./data:/app/data:ro
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
       interval: 10s
