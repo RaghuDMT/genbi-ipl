@@ -41,27 +41,57 @@ def _derive_tournament(event_name: str, gender: str) -> str:
     return "IPL"
 
 
+# Explicit overrides for split-year seasons where the trailing-year rule
+# gives the wrong answer. IPL 2020 was played Sep-Nov 2020 in UAE and is
+# universally referred to as "IPL 2020" despite Cricsheet labeling it "2020/21".
+_SEASON_YEAR_OVERRIDES: dict[str, int] = {
+    "2020/21": 2020,
+}
+
+
 def parse_season_year(season: str) -> int:
-    """Parse a season label into its starting year.
+    """Parse a season label into its canonical calendar year.
+
+    Cricsheet uses two formats:
+    - Plain year: ``"2023"`` → 2023
+    - Split year: ``"2007/08"`` → 2008, ``"2009/10"`` → 2010
+
+    For split-year formats the trailing year is returned because IPL fans
+    refer to the "2007/08" season as "IPL 2008" (the year it was played).
+
+    Exception: seasons in ``_SEASON_YEAR_OVERRIDES`` use the explicitly
+    mapped year instead of the trailing-year formula.
 
     Args:
-        season: Season value from Cricsheet, such as ``"2023"`` or ``"2023/24"``.
+        season: Season value from Cricsheet.
 
     Returns:
-        The starting year as an integer.
+        The canonical calendar year as an integer.
 
     Raises:
-        ValueError: If the season string does not begin with a four-digit year.
+        ValueError: If the season string cannot be parsed.
     """
     season_text = str(season).strip()
     if not season_text:
         raise ValueError("Season value is empty")
 
-    leading_year = season_text.split("/", maxsplit=1)[0].strip()
-    if len(leading_year) != 4 or not leading_year.isdigit():
-        raise ValueError(f"Unsupported season format: {season!r}")
+    # Check explicit overrides first
+    if season_text in _SEASON_YEAR_OVERRIDES:
+        return _SEASON_YEAR_OVERRIDES[season_text]
 
-    return int(leading_year)
+    if "/" in season_text:
+        parts = season_text.split("/", maxsplit=1)
+        leading = parts[0].strip()
+        trailing = parts[1].strip()
+        if len(leading) == 4 and leading.isdigit() and len(trailing) == 2 and trailing.isdigit():
+            century = leading[:2]
+            return int(century + trailing)
+        raise ValueError(f"Unsupported split-year season format: {season!r}")
+
+    if len(season_text) == 4 and season_text.isdigit():
+        return int(season_text)
+
+    raise ValueError(f"Unsupported season format: {season!r}")
 
 
 def generate_venue_id(venue_name: str) -> str:
@@ -104,43 +134,38 @@ def build_dim_player(matches: list[dict]) -> list[dict]:
     for match in matches:
         info = _as_dict(match.get("info"))
         registry_people = _as_dict(_as_dict(info.get("registry")).get("people"))
-        players_by_team = _as_dict(info.get("players"))
         match_gender = str(info.get("gender", "")).strip().lower()
         match_id = str(match.get("match_id", ""))
 
-        for team_players in players_by_team.values():
-            for raw_name in _as_list(team_players):
-                player_name = _normalize_name(raw_name)
-                if not player_name:
-                    continue
+        # Iterate over every player in the registry - the authoritative index
+        # of people who appear in this match (squad, substitutes, fielders).
+        # Falling back to info.players would miss substitute fielders who took
+        # catches without being named in the starting XI.
+        for raw_name, raw_uuid in registry_people.items():
+            player_name = _normalize_name(raw_name)
+            player_id = _normalize_name(raw_uuid)
 
-                player_id = _normalize_name(registry_people.get(player_name))
-                if not player_id:
-                    logger.warning(
-                        "Skipping player without registry UUID",
-                        match_id=match_id,
-                        player_name=player_name,
-                    )
-                    continue
+            if not player_name or not player_id:
+                continue
 
-                record = player_index.setdefault(
-                    player_id,
-                    {
-                        "name_counts": Counter(),
-                        "gender": match_gender or None,
-                        "gender_sources": set([match_gender]) if match_gender else set(),
-                    },
-                )
-                name_counts = record["name_counts"]
-                if isinstance(name_counts, Counter):
-                    name_counts[player_name] += 1
+            record = player_index.setdefault(
+                player_id,
+                {
+                    "name_counts": Counter(),
+                    "gender": None,
+                    "gender_sources": set(),
+                },
+            )
+            name_counts = record["name_counts"]
+            if isinstance(name_counts, Counter):
+                name_counts[player_name] += 1
 
+            if match_gender:
                 existing_gender = record.get("gender")
-                if existing_gender is None and match_gender:
-                    record["gender"] = match_gender
-
                 gender_sources = record.get("gender_sources")
-                if isinstance(gender_sources, set) and match_gender:
+                if existing_gender is None:
+                    record["gender"] = match_gender
+                if isinstance(gender_sources, set):
                     gender_sources.add(match_gender)
                     if existing_gender and existing_gender != match_gender:
                         logger.warning(
@@ -252,6 +277,7 @@ def build_dim_match(matches: list[dict], venue_id_map: dict[str, str]) -> list[d
         info = _as_dict(match.get("info"))
         outcome = _as_dict(info.get("outcome"))
         outcome_by = _as_dict(outcome.get("by"))
+        toss = _as_dict(info.get("toss"))
         registry_people = _as_dict(_as_dict(info.get("registry")).get("people"))
         teams = [_normalize_name(team) for team in _as_list(info.get("teams")) if _normalize_name(team)]
         event = info.get("event")
@@ -282,6 +308,8 @@ def build_dim_match(matches: list[dict], venue_id_map: dict[str, str]) -> list[d
                 "team1_name": teams[0] if len(teams) > 0 else None,
                 "team2_name": teams[1] if len(teams) > 1 else None,
                 "venue_id": venue_id_map.get(venue_name),
+                "toss_winner_team_name": _normalize_name(toss.get("winner")) or None,
+                "toss_decision": _normalize_name(toss.get("decision")) or None,
                 "winner_team_name": winner_team,
                 "win_by_runs": outcome_by.get("runs"),
                 "win_by_wickets": outcome_by.get("wickets"),

@@ -33,6 +33,7 @@ def sample_matches() -> list[dict]:
                     "Royal Challengers Bangalore": ["V Kohli", "F du Plessis"],
                     "Mumbai Indians": ["RG Sharma", "JJ Bumrah"],
                 },
+                "toss": {"winner": "Mumbai Indians", "decision": "field"},
                 "registry": {
                     "people": {
                         "V Kohli": "player-virat",
@@ -59,6 +60,7 @@ def sample_matches() -> list[dict]:
                     "Royal Challengers Bangalore": ["Virat Kohli", "F du Plessis"],
                     "Chennai Super Kings": ["MS Dhoni", "RD Gaikwad"],
                 },
+                "toss": {"winner": "Chennai Super Kings", "decision": "bat"},
                 "registry": {
                     "people": {
                         "Virat Kohli": "player-virat",
@@ -121,8 +123,9 @@ def sample_matches() -> list[dict]:
 
 def test_parse_season_year_variants() -> None:
     assert parse_season_year("2023") == 2023
-    assert parse_season_year("2023/24") == 2023
-    assert parse_season_year(" 2024 /25 ") == 2024
+    assert parse_season_year("2007/08") == 2008
+    assert parse_season_year("2009/10") == 2010
+    assert parse_season_year("2023/24") == 2024
 
 
 def test_parse_season_year_rejects_invalid_input() -> None:
@@ -133,6 +136,20 @@ def test_parse_season_year_rejects_invalid_input() -> None:
         parse_season_year("23/24")
 
 
+def test_parse_season_year_splits_merged_seasons() -> None:
+    """2009 and 2009/10 must parse to different years."""
+    assert parse_season_year("2009") == 2009
+    assert parse_season_year("2009/10") == 2010
+    assert parse_season_year("2009") != parse_season_year("2009/10")
+    assert parse_season_year("2020/21") == 2020  # override: IPL 2020 played in 2020
+
+def test_parse_season_year_override_takes_precedence():
+    """Explicit overrides beat the trailing-year formula."""
+    # 2020/21 trailing year would be 2021, but override says 2020
+    assert parse_season_year("2020/21") == 2020
+    # 2007/08 has no override, so trailing year applies
+    assert parse_season_year("2007/08") == 2008
+
 def test_build_dim_player_aggregates_name_variants(sample_matches: list[dict]) -> None:
     players = build_dim_player(sample_matches)
 
@@ -141,6 +158,20 @@ def test_build_dim_player_aggregates_name_variants(sample_matches: list[dict]) -
     assert virat["player_name"] == "Virat Kohli"
     assert virat["name_variants"] == ["V Kohli", "Virat Kohli"]
     assert virat["gender"] == "male"
+
+
+def test_build_dim_player_includes_registry_only_players(sample_matches: list[dict]) -> None:
+    registry_only_name = "Sub Fielder"
+    registry_only_id = "player-sub-fielder"
+    sample_matches[0]["info"]["registry"]["people"][registry_only_name] = registry_only_id
+
+    players = build_dim_player(sample_matches)
+
+    registry_only_player = next(player for player in players if player["player_id"] == registry_only_id)
+
+    assert registry_only_player["player_name"] == registry_only_name
+    assert registry_only_player["name_variants"] == [registry_only_name]
+    assert registry_only_player["gender"] == "male"
 
 
 def test_build_dim_team_deduplicates_names(sample_matches: list[dict]) -> None:
@@ -179,23 +210,30 @@ def test_build_dim_match_parses_outcomes(sample_matches: list[dict]) -> None:
     tie_match = next(match for match in match_records if match["match_id"] == "2002")
 
     assert by_runs["winner_team_name"] == "Royal Challengers Bangalore"
+    assert by_runs["toss_winner_team_name"] == "Mumbai Indians"
+    assert by_runs["toss_decision"] == "field"
     assert by_runs["win_by_runs"] == 7
     assert by_runs["win_by_wickets"] is None
     assert by_runs["player_of_match_id"] == "player-virat"
 
     assert by_wickets["winner_team_name"] == "Chennai Super Kings"
+    assert by_wickets["toss_winner_team_name"] == "Chennai Super Kings"
+    assert by_wickets["toss_decision"] == "bat"
     assert by_wickets["win_by_runs"] is None
     assert by_wickets["win_by_wickets"] == 5
 
     assert no_result["result"] == "no result"
     assert no_result["method"] == "D/L"
+    assert no_result["toss_winner_team_name"] is None
     assert no_result["winner_team_name"] is None
 
     assert tie_match["result"] == "tie"
+    assert tie_match["toss_decision"] is None
     assert tie_match["winner_team_name"] is None
 
 
 def test_build_dim_season_aggregates_matches(sample_matches: list[dict]) -> None:
+    sample_matches[1]["info"]["season"] = "2023"
     venues = build_dim_venue(sample_matches)
     venue_id_map = {venue["venue_name"]: venue["venue_id"] for venue in venues}
     match_records = build_dim_match(sample_matches, venue_id_map)
