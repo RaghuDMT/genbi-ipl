@@ -1,67 +1,71 @@
+# genbi-ipl
+
 **AI-powered generative BI for IPL and WPL cricket analytics.**
 
-Ask questions in plain English. Get SQL, results, and a natural language explanation — grounded in ball-by-ball data from every IPL and WPL match since 2008.
+Ask questions in plain English. Get SQL, results, and a natural language explanation — grounded in ball-by-ball data from every IPL match since 2008 and every WPL match since 2023.
 
-> "Who had the best economy rate in powerplay overs across IPL 2023?"
-> "Show me Virat Kohli's strike rate in death overs by season."
-> "Which team hits the most sixes at Wankhede Stadium?"
+> *"Who had the best economy rate in powerplay overs across IPL 2023?"*
+> *"Show me Virat Kohli's strike rate in death overs by season."*
+> *"Which team hits the most sixes at Wankhede Stadium?"*
 
 ---
 
 ## What This Is
 
-genbi-ipl is a production-grade **text-to-SQL system** built specifically for cricket analytics. It combines a RAG (Retrieval-Augmented Generation) pipeline with a semantic layer grounded in cricket domain knowledge to convert natural language queries into accurate DuckDB SQL against a ball-by-ball fact table.
+genbi-ipl is a **text-to-SQL system** built specifically for cricket analytics. It combines a RAG (Retrieval-Augmented Generation) pipeline with a semantic layer grounded in cricket domain knowledge, converting natural-language questions into accurate DuckDB SQL against a ball-by-ball fact table.
 
 This is a portfolio project demonstrating real-world LLM application engineering — not a tutorial or toy. Every architectural decision is documented, every module is tested, and the system is designed to run end-to-end on a laptop with zero cloud costs.
 
 ---
 
 ## Architecture
+
+```
 Browser
-│
-▼
+   │
+   ▼
 ┌──────────────────────┐
 │   Go API Gateway     │  Request validation, rate limiting,
 │   (Gin, port 8080)   │  structured logging, request IDs
 └──────────┬───────────┘
-│ HTTP
-▼
+           │ HTTP
+           ▼
 ┌──────────────────────┐
-│  Python Intelligence │  10-step query pipeline:
+│  Python Intelligence │  Text-to-SQL pipeline:
 │  Service (FastAPI,   │  semantic rewrite → schema injection →
 │  port 8000)          │  few-shot retrieval → SQL generation →
 │                      │  validation → execution → explanation
 └──────┬───────┬───────┘
-│       │
-▼       ▼
-DuckDB    ChromaDB
-(fact +   (embeddings:
-dim       few-shot examples
-tables)   + entity resolution)
+       │       │
+       ▼       ▼
+  DuckDB    ChromaDB
+  (fact +   (embeddings:
+  dim       few-shot examples
+  tables)   + entity resolution)
+```
 
 **Key design decisions:**
-- Go gateway handles all operational concerns (auth, rate limiting, observability). Python handles all intelligence concerns (LLM, RAG, SQL). Clean separation of responsibilities.
+
+- Go gateway owns operational concerns (validation, rate limiting, observability). Python owns intelligence (LLM, RAG, SQL). Clean separation.
 - Intelligence lives in prompt engineering and orchestration, not a self-hosted model. LLM calls go to Groq's free tier (Llama 4 Scout for SQL, Llama 3.1 8B for explanations).
 - Schema design encodes cricket domain knowledge — `match_phase`, `is_bowler_wicket`, `is_legal_delivery` — so the LLM generates simpler, more accurate SQL.
-
-Full architecture documentation: [`docs/02_architecture.md`](docs/02_architecture.md)
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology | Why |
-|---|---|---|
-| API Gateway | Go 1.22 + Gin | Production-style operational shell — rate limiting, logging, timeouts |
-| Intelligence Service | Python 3.12 + FastAPI | LLM orchestration, RAG pipeline |
-| Database | DuckDB | Embedded analytical DB — no server, fast aggregations, great Python API |
-| Vector Store | ChromaDB | Embedded, zero-cost, Python-native |
-| Embeddings | bge-small-en-v1.5 (CPU) | Few-shot retrieval + entity resolution |
-| LLM | Groq free tier (Llama 4 Scout) | Zero cost, strong SQL generation benchmarks |
-| ETL | Python + pandas | Cricsheet JSON → DuckDB, 303k rows in ~5 seconds |
-| Orchestration | Docker Compose | Single `docker compose up` runs everything |
-| Logging | structlog | Structured JSON logs with request IDs |
-| SQL Validation | sqlglot | Catches hallucinated tables, unsafe mutations, missing LIMITs |
+| Layer                 | Technology                |           Why             |
+|                    ---|                        ---|                       --- |
+| API Gateway           | Go 1.22 + Gin             | Production-style operational shell |
+| Intelligence Service  | Python 3.12 + FastAPI     | LLM orchestration, RAG pipeline |
+| Database              | DuckDB                    | Embedded analytical DB, fast aggregations |
+| Vector Store          | ChromaDB                  | Embedded, zero-cost, Python-native |
+| Embeddings            | bge-small-en-v1.5 (CPU)   | Few-shot retrieval + entity resolution |
+| LLM                   | Groq free tier (Llama 4 Scout) | Zero cost, strong SQL benchmarks |
+| ETL                   | Python + pandas           | Cricsheet JSON → DuckDB, 303k rows in ~5s |
+| Orchestration         | Docker Compose            | Single command runs everything |
+| Logging               | structlog                 | Structured JSON logs with request IDs |
+| SQL Validation        | sqlglot                   | Catches hallucinated tables, unsafe mutations |
 
 ---
 
@@ -70,23 +74,28 @@ Full architecture documentation: [`docs/02_architecture.md`](docs/02_architectur
 **Source:** [Cricsheet](https://cricsheet.org/) — ball-by-ball JSON for every IPL and WPL match.
 
 **Coverage:**
+
 - IPL: 2008–2026 (1,193 matches)
 - WPL: 2023–2026 (88 matches)
 - Total: 1,281 matches, 303,846 deliveries
 
-**Schema (star schema):**
+**Star schema:**
+
+```
 fact_ball          ← one row per delivery (303,846 rows)
-├── dim_player   ← 1,099 unique players with UUID-based entity resolution
-├── dim_match    ← 1,281 matches with outcome details
-├── dim_team     ← 21 teams (handles franchise renames)
-├── dim_venue    ← 61 venues
-└── dim_season   ← 23 seasons (IPL 2008–2026, WPL 2023–2026)
+  ├── dim_player   ← 1,099 unique players with UUID-based entity resolution
+  ├── dim_match    ← 1,281 matches with outcome details
+  ├── dim_team     ← 21 teams (handles franchise renames)
+  ├── dim_venue    ← 61 venues
+  └── dim_season   ← 23 seasons
+```
 
 **Pre-computed columns on `fact_ball`:**
-- `match_phase` — powerplay / middle / death (encoded at ETL time)
+
+- `match_phase` — powerplay / middle / death
 - `is_legal_delivery` — excludes wides and no-balls
 - `is_bowler_wicket` — excludes run-outs from bowling figures
-- `is_boundary_four`, `is_boundary_six` — respects `non_boundary` flag
+- `is_boundary_four`, `is_boundary_six` — respects the `non_boundary` flag
 - `is_dot_ball` — legal delivery, zero runs, no wicket
 
 ---
@@ -95,124 +104,106 @@ fact_ball          ← one row per delivery (303,846 rows)
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with at least 6GB RAM allocated
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with at least 6 GB RAM allocated
 - [Git](https://git-scm.com/)
 - A free [Groq API key](https://console.groq.com/keys)
 
-### Setup
+### Quick Start
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/RaghuS007/genbi-ipl
+# 1. Clone
+git clone https://github.com/RaghuS007/genbi-ipl.git
 cd genbi-ipl
 
-# 2. Create your environment file
-cp .env.example .env
-# Edit .env and add your Groq API key: GROQ_API_KEY=gsk_...
+# 2. Set up your Groq API key
+cp .env.example .env       # macOS/Linux
+copy .env.example .env     # Windows PowerShell
+# Edit .env and set GROQ_API_KEY=your_key_here
 
-# 3. Start both services
+# 3. Build and start both services
 docker compose up --build -d
 
-# 4. Download IPL + WPL data from Cricsheet (~150MB)
+# 4. Verify both services are healthy
+curl http://localhost:8080/health
+curl http://localhost:8000/health
+
+# 5. Download Cricsheet data (~150 MB)
 docker compose exec intelligence python scripts/download_data.py
 
-# 5. Run the ETL pipeline (builds DuckDB from raw JSON, ~5 minutes)
+# 6. Run the ETL pipeline (~5 minutes first run)
 docker compose exec intelligence python -m etl.run_etl
 
-# 6. Verify the data loaded correctly
+# 7. Verify the data loaded correctly
 docker compose exec intelligence python scripts/verify_etl.py
 
-# 7. Open the UI
-open http://localhost:8080   # macOS
-start http://localhost:8080  # Windows
+# 8. Open the UI
+# macOS:   open http://localhost:8080
+# Linux:   xdg-open http://localhost:8080
+# Windows: start http://localhost:8080
 ```
 
-The ETL run produces a ~80MB DuckDB file in `data/db/genbi.duckdb` with full referential integrity and automated quality checks. First run takes ~5 minutes; subsequent runs are idempotent.
+The ETL is fully idempotent — drop-and-recreate on every run, so running it twice gives you one clean database, not doubled rows.
 
-### Verify Services Are Running
+---
+
+## Useful Commands
 
 ```bash
-curl http://localhost:8080/health   # Go gateway
-curl http://localhost:8000/health   # Python service
+# Tail logs
+docker compose logs -f
+
+# Stop services
+docker compose down
+
+# Rebuild and restart
+docker compose up --build -d
+
+# Run the ETL test suite (19 tests)
+docker compose exec intelligence pytest etl/tests/ -v
+
+# Re-run the ETL (after code changes or to refresh data)
+docker compose exec intelligence python -m etl.run_etl
+
+# Query the database via verification script
+docker compose exec intelligence python scripts/verify_etl.py
 ```
 
 ---
 
 ## Project Structure
+
+```
 genbi-ipl/
 ├── gateway/                    # Go API gateway (Gin)
-│   ├── main.go                 # Request validation, proxy, middleware
+│   ├── main.go                 # Validation, proxy, middleware
 │   └── Dockerfile
 │
 ├── intelligence/               # Python intelligence service (FastAPI)
 │   ├── app/
-│   │   ├── main.py             # FastAPI app, health + query endpoints
-│   │   ├── api/                # Request/response schemas (Pydantic)
-│   │   └── orchestration/      # 10-step query pipeline (Phase 2)
+│   │   ├── main.py             # FastAPI app, /health + /query endpoints
+│   │   └── api/                # Request/response schemas (Pydantic)
 │   ├── requirements.txt
 │   └── Dockerfile
 │
-├── etl/                        # ETL pipeline
+├── etl/                        # ETL pipeline (Phase 1 — complete)
 │   ├── extract.py              # Cricsheet JSON → Python dicts
 │   ├── transform.py            # Dimension table builders
-│   ├── transform_facts.py      # fact_ball builder with cricket logic
+│   ├── transform_facts.py      # fact_ball with cricket logic
 │   ├── load.py                 # DuckDB schema + bulk insert
 │   ├── quality_checks.py       # Post-load assertions
-│   ├── run_etl.py              # Orchestrator (extract→transform→load→verify)
+│   ├── run_etl.py              # Orchestrator
 │   └── tests/                  # 19 unit tests, all passing
 │
-├── config/                     # YAML configuration
-│   └── semantic_layer/         # Cricket term definitions, metric formulas
-│
+├── config/                     # YAML configuration (semantic layer)
 ├── scripts/                    # Utility scripts
 │   ├── download_data.py        # Fetch Cricsheet zips
 │   └── verify_etl.py           # Post-ETL sanity queries
 │
 ├── frontend/static/            # Minimal HTML/JS UI
-├── data/                       # Gitignored: raw JSON, DuckDB file, ChromaDB
+├── data/                       # Gitignored: raw JSON, DuckDB, ChromaDB
 ├── evaluation/                 # Golden query set (Phase 6)
-└── docs/                       # Planning documents
-├── 01_product_and_scope.md
-├── 02_architecture.md
-├── 03_adrs.md              # 15 Architecture Decision Records
-└── 04_delivery_plan.md
-
----
-
-## Development
-
-### Running Tests
-
-```bash
-# All ETL tests
-docker compose exec intelligence pytest etl/tests/ -v
-
-# Specific suite
-docker compose exec intelligence pytest etl/tests/test_transform_facts.py -v
-```
-
-### Useful Make Targets
-
-```bash
-make up          # Start services (docker compose up --build -d)
-make down        # Stop services
-make logs        # Tail logs
-make health      # Curl both health endpoints
-```
-
-### Re-running the ETL
-
-The ETL is fully idempotent — safe to run multiple times:
-
-```bash
-docker compose exec intelligence python -m etl.run_etl
-```
-
-To refresh from the latest Cricsheet data:
-
-```bash
-docker compose exec intelligence python scripts/download_data.py
-docker compose exec intelligence python -m etl.run_etl
+├── docker-compose.yaml
+└── README.md
 ```
 
 ---
@@ -229,11 +220,33 @@ docker compose exec intelligence python -m etl.run_etl
 | Phase 5 | Frontend UI | ⏳ Planned |
 | Phase 6 | Evaluation suite + accuracy measurement | ⏳ Planned |
 
+**Current capabilities:**
+
+- ✅ Full ETL from Cricsheet to queryable DuckDB (1,281 matches, 303,846 deliveries)
+- ✅ Full referential integrity (DuckDB-enforced FKs, CHECK constraints)
+- ✅ Idempotent re-runs (drop-and-recreate)
+- ✅ Automated post-load quality checks
+- ✅ 19 unit tests passing
+- 🔄 Text-to-SQL stub endpoint (real LLM integration in Phase 2)
+
 ---
 
-## Architecture Decision Records
+## Troubleshooting
 
-15 ADRs document every significant technical decision — why Go was chosen for the gateway, why DuckDB over PostgreSQL, why generated text corpus for RAG, why CPU-only embeddings, why the LLM-friendly schema design. See [`docs/03_adrs.md`](docs/03_adrs.md).
+**`docker compose up` takes a long time on first build.**
+First build downloads Python dependencies including a CPU-only PyTorch build (~200 MB). Subsequent builds use Docker layer cache and are much faster.
+
+**`ModuleNotFoundError: No module named 'etl'` when running scripts.**
+Make sure you're running inside the container (`docker compose exec intelligence ...`), not on your host. The `etl` package is at `/app/etl` inside the container.
+
+**ETL fails with `Could not find file data/raw/...`.**
+Run the download step first: `docker compose exec intelligence python scripts/download_data.py`
+
+**Health check on `http://localhost:8080/health` fails.**
+Give the services 10–15 seconds to start up after `docker compose up`. The Go gateway waits for the Python service to report healthy.
+
+**First embedding call is slow.**
+The `bge-small-en-v1.5` model downloads from HuggingFace on first use (~133 MB). Cached for all subsequent calls.
 
 ---
 
