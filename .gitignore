@@ -21,6 +21,7 @@ gateway/gateway.exe
 
 # Data (large files, generated — keep directory structure)
 data/raw/*
+data/cache/*
 data/db/*
 data/chromadb/*
 !data/.gitkeep
