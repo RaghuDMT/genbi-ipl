@@ -10,6 +10,18 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Canonical team-name mapping for franchise renames.
+# Maps every known historical name to its current canonical name.
+# Only legal renames are listed here. Legally separate franchises
+# that share a city (e.g., Deccan Chargers vs Sunrisers Hyderabad,
+# Gujarat Lions vs Gujarat Titans) are intentionally NOT mapped.
+TEAM_ALIAS_MAP: dict[str, str] = {
+    "Royal Challengers Bangalore": "Royal Challengers Bengaluru",
+    "Delhi Daredevils": "Delhi Capitals",
+    "Kings XI Punjab": "Punjab Kings",
+    "Rising Pune Supergiants": "Rising Pune Supergiant",
+}
+
 
 def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
@@ -32,6 +44,11 @@ def _canonical_name(name_counts: Counter[str]) -> str:
         name_counts,
         key=lambda name: (-name_counts[name], -len(name), name),
     )
+
+
+def canonicalize_team_name(name: str) -> str:
+    """Return the canonical (current) name for a team, or the input unchanged."""
+    return TEAM_ALIAS_MAP.get(name, name)
 
 
 def _derive_tournament(event_name: str, gender: str) -> str:
@@ -205,22 +222,25 @@ def build_dim_team(matches: list[dict]) -> list[dict]:
     Returns:
         Team dimension records, one per distinct team name.
     """
-    team_names: set[str] = set()
+    team_variants: dict[str, set[str]] = defaultdict(set)
 
     for match in matches:
         info = _as_dict(match.get("info"))
         for raw_team_name in _as_list(info.get("teams")):
             team_name = _normalize_name(raw_team_name)
-            if team_name:
-                team_names.add(team_name)
+            if not team_name:
+                continue
+            canonical_name = canonicalize_team_name(team_name)
+            team_variants[canonical_name].add(team_name)
+            team_variants[canonical_name].add(canonical_name)
 
     team_records = [
         {
-            "team_id": generate_team_id(team_name),
-            "team_name": team_name,
-            "team_name_variants": [],
+            "team_id": generate_team_id(canonical_name),
+            "team_name": canonical_name,
+            "team_name_variants": sorted(variants),
         }
-        for team_name in sorted(team_names)
+        for canonical_name, variants in sorted(team_variants.items())
     ]
 
     logger.info("Built team records", count=len(team_records))
@@ -279,7 +299,11 @@ def build_dim_match(matches: list[dict], venue_id_map: dict[str, str]) -> list[d
         outcome_by = _as_dict(outcome.get("by"))
         toss = _as_dict(info.get("toss"))
         registry_people = _as_dict(_as_dict(info.get("registry")).get("people"))
-        teams = [_normalize_name(team) for team in _as_list(info.get("teams")) if _normalize_name(team)]
+        teams = [
+            canonicalize_team_name(_normalize_name(team))
+            for team in _as_list(info.get("teams"))
+            if _normalize_name(team)
+        ]
         event = info.get("event")
         event_name = ""
         if isinstance(event, dict):
@@ -294,7 +318,10 @@ def build_dim_match(matches: list[dict], venue_id_map: dict[str, str]) -> list[d
         venue_name = _normalize_name(info.get("venue"))
         player_of_match_list = _as_list(info.get("player_of_match"))
         player_of_match_name = _normalize_name(player_of_match_list[0]) if player_of_match_list else None
-        winner_team = _normalize_name(outcome.get("winner")) or None
+        winner_team_raw = _normalize_name(outcome.get("winner")) or None
+        winner_team = canonicalize_team_name(winner_team_raw) if winner_team_raw else None
+        toss_winner_raw = _normalize_name(toss.get("winner")) or None
+        toss_winner = canonicalize_team_name(toss_winner_raw) if toss_winner_raw else None
         result = _normalize_name(outcome.get("result")) or None
         method = _normalize_name(outcome.get("method")) or None
 
@@ -308,7 +335,7 @@ def build_dim_match(matches: list[dict], venue_id_map: dict[str, str]) -> list[d
                 "team1_name": teams[0] if len(teams) > 0 else None,
                 "team2_name": teams[1] if len(teams) > 1 else None,
                 "venue_id": venue_id_map.get(venue_name),
-                "toss_winner_team_name": _normalize_name(toss.get("winner")) or None,
+                "toss_winner_team_name": toss_winner,
                 "toss_decision": _normalize_name(toss.get("decision")) or None,
                 "winner_team_name": winner_team,
                 "win_by_runs": outcome_by.get("runs"),

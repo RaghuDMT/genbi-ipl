@@ -16,6 +16,21 @@ from etl.transform import (
 )
 
 
+def _make_match_with_teams(team1: str, team2: str, season: str) -> dict:
+    return {
+        "match_id": f"{team1}-{team2}-{season}",
+        "info": {
+            "teams": [team1, team2],
+            "season": season,
+            "gender": "male",
+        },
+    }
+
+
+def team_names_count(teams: list[dict], substring: str) -> int:
+    return sum(1 for team in teams if substring in team["team_name"])
+
+
 @pytest.fixture
 def sample_matches() -> list[dict]:
     return [
@@ -182,7 +197,7 @@ def test_build_dim_team_deduplicates_names(sample_matches: list[dict]) -> None:
         "Delhi Capitals Women",
         "Mumbai Indians",
         "Mumbai Indians Women",
-        "Royal Challengers Bangalore",
+        "Royal Challengers Bengaluru",
         "UP Warriorz Women",
     }
 
@@ -209,7 +224,7 @@ def test_build_dim_match_parses_outcomes(sample_matches: list[dict]) -> None:
     no_result = next(match for match in match_records if match["match_id"] == "2001")
     tie_match = next(match for match in match_records if match["match_id"] == "2002")
 
-    assert by_runs["winner_team_name"] == "Royal Challengers Bangalore"
+    assert by_runs["winner_team_name"] == "Royal Challengers Bengaluru"
     assert by_runs["toss_winner_team_name"] == "Mumbai Indians"
     assert by_runs["toss_decision"] == "field"
     assert by_runs["win_by_runs"] == 7
@@ -230,6 +245,51 @@ def test_build_dim_match_parses_outcomes(sample_matches: list[dict]) -> None:
     assert tie_match["result"] == "tie"
     assert tie_match["toss_decision"] is None
     assert tie_match["winner_team_name"] is None
+
+
+def test_team_aliases_canonicalize_to_single_team() -> None:
+    """Renamed franchises should produce one dim_team row, not multiple."""
+    matches = [
+        _make_match_with_teams("Royal Challengers Bangalore", "Mumbai Indians", "2010"),
+        _make_match_with_teams("Royal Challengers Bengaluru", "Mumbai Indians", "2024"),
+        _make_match_with_teams("Delhi Daredevils", "Chennai Super Kings", "2012"),
+        _make_match_with_teams("Delhi Capitals", "Chennai Super Kings", "2023"),
+        _make_match_with_teams("Kings XI Punjab", "Mumbai Indians", "2014"),
+        _make_match_with_teams("Punjab Kings", "Mumbai Indians", "2022"),
+    ]
+    teams = build_dim_team(matches)
+    team_names = {team["team_name"] for team in teams}
+
+    assert "Royal Challengers Bengaluru" in team_names
+    assert "Royal Challengers Bangalore" not in team_names
+    assert "Delhi Capitals" in team_names
+    assert "Delhi Daredevils" not in team_names
+    assert "Punjab Kings" in team_names
+    assert "Kings XI Punjab" not in team_names
+
+    rcb = next(team for team in teams if team["team_name"] == "Royal Challengers Bengaluru")
+    assert set(rcb["team_name_variants"]) == {
+        "Royal Challengers Bangalore",
+        "Royal Challengers Bengaluru",
+    }
+
+
+def test_franchises_with_same_city_are_not_grouped() -> None:
+    """Legally separate franchises that share a city must remain separate."""
+    matches = [
+        _make_match_with_teams("Deccan Chargers", "Mumbai Indians", "2010"),
+        _make_match_with_teams("Sunrisers Hyderabad", "Mumbai Indians", "2014"),
+        _make_match_with_teams("Gujarat Lions", "Mumbai Indians", "2016"),
+        _make_match_with_teams("Gujarat Titans", "Mumbai Indians", "2022"),
+    ]
+    teams = build_dim_team(matches)
+    team_names = {team["team_name"] for team in teams}
+
+    assert "Deccan Chargers" in team_names
+    assert "Sunrisers Hyderabad" in team_names
+    assert team_names_count(teams, "Deccan") + team_names_count(teams, "Sunrisers") == 2
+    assert "Gujarat Lions" in team_names
+    assert "Gujarat Titans" in team_names
 
 
 def test_build_dim_season_aggregates_matches(sample_matches: list[dict]) -> None:
